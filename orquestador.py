@@ -13,11 +13,13 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 python_exe = sys.executable  # usa el python del venv activo
 
-# Lista de procesos en orden de ejecución
+# Lista de procesos en orden de ejecución.
+# Cada tupla: (nombre, ruta, critico)
+# critico=False → si falla, se registra pero NO se detiene la cadena.
 PROCESOS = [
-    ("Descargue Multicanal", BASE_DIR / "RPA_descargue_multicanal.py"),
-    ("Procesamiento SMS", BASE_DIR / "main_sms.py"),
-    ("Cargue Promotora", BASE_DIR / "RPA_cargue.py"),
+    ("Descargue Multicanal", BASE_DIR / "RPA_descargue_multicanal.py", False),
+    ("Procesamiento SMS",    BASE_DIR / "main_sms.py",                  True),
+    ("Cargue Promotora",    BASE_DIR / "RPA_cargue.py",                 True),
 ]
 
 LOGS_DIR = BASE_DIR / "logs_orquestador"
@@ -113,20 +115,21 @@ def main():
     log(f"🚀 Iniciando orquestador Promotora con {len(PROCESOS)} procesos...")
     resultados = []
 
-    for nombre, ruta in PROCESOS:
+    for nombre, ruta, critico in PROCESOS:
         ok = ejecutar_proceso(nombre, ruta)
         resultados.append((nombre, ok))
         if not ok:
-            log(f"⚠ Proceso fallido: {nombre}. Abortando la ejecución secuencial...")
-            # Como los procesos dependen uno del otro (Descargue -> Procesado -> Cargue),
-            # si uno falla, detenemos los demás para evitar que se cargue información desactualizada o erronea.
-            break
+            if critico:
+                log(f"⚠ Proceso crítico fallido: {nombre}. Abortando la ejecución secuencial...")
+                break
+            else:
+                log(f"⚠ Proceso no crítico fallido: {nombre}. Continuando con el siguiente proceso...")
 
     exitosos = [n for n, ok in resultados if ok]
     fallidos = [n for n, ok in resultados if not ok]
-    
+
     procesos_ejecutados = exitosos + fallidos
-    no_ejecutados = [n for n, _ in PROCESOS if n not in procesos_ejecutados]
+    no_ejecutados = [n for n, _, _ in PROCESOS if n not in procesos_ejecutados]
     for n in no_ejecutados:
         fallidos.append(f"{n} (Abor.)")
 
