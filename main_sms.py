@@ -145,9 +145,13 @@ def s3_client():
     load_dotenv()
     return boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
 
-def pick_latest_object(client, bucket: str, prefix: str) -> dict:
+def pick_latest_object(client, bucket: str, prefix: str, exclude_prefix: str = "") -> dict:
     resp = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    files = [o for o in resp.get("Contents", []) if not o["Key"].endswith("/")]
+    files = [
+        o for o in resp.get("Contents", [])
+        if not o["Key"].endswith("/")
+        and (not exclude_prefix or not o["Key"].startswith(exclude_prefix))
+    ]
     if not files:
         raise FileNotFoundError("No se encontraron archivos en S3")
     return max(files, key=lambda x: x["LastModified"])
@@ -272,7 +276,7 @@ def main():
         raise ValueError("Falta variable de entorno S3_BUCKET")
 
     client = s3_client()
-    latest = pick_latest_object(client, bucket, S3_FOLDER)
+    latest = pick_latest_object(client, bucket, S3_FOLDER, exclude_prefix=S3_PROCESADOS_FOLDER)
 
     df_sms = read_sms_csv_from_s3(client, bucket, latest["Key"])
 
