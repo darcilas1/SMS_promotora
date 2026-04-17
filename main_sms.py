@@ -23,7 +23,7 @@ OUTPUT_FILE    = MENSAJE_DIR / f"cargue_sms_{datetime.now(ZoneInfo('America/Bogo
 
 # Carpeta de lotes
 LOTES_DIR      = MENSAJE_DIR / "lotes"
-LOTE_SIZE      = 20000  # <- tamaño de cada lote
+LOTE_SIZE      = 10000  # <- tamaño de cada lote
 
 MULTICANAL_DIR = PROJECT_ROOT / "Multicanal"
 
