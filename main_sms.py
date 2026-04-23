@@ -3,7 +3,7 @@ import sys
 import re
 import unicodedata
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 from io import BytesIO
 
@@ -17,9 +17,6 @@ PROJECT_ROOT   = Path(__file__).resolve().parent
 
 TEMPLATE_PATH  = PROJECT_ROOT / "formatoArbolProducto.csv"
 MENSAJE_DIR    = PROJECT_ROOT / "Mensaje_Texto"
-
-# Archivo final (completo)
-OUTPUT_FILE    = MENSAJE_DIR / f"cargue_sms_{datetime.now(ZoneInfo('America/Bogota')).date()}.csv"
 
 # Carpeta de lotes
 LOTES_DIR      = MENSAJE_DIR / "lotes"
@@ -65,17 +62,23 @@ def read_template_columns(path: Path) -> list:
     cols = [c.strip() for c in df_hdr.columns if c and not str(c).lower().startswith("unnamed")]
     return cols
 
-def bogota_today_8am_str() -> str:
-    tz = ZoneInfo("America/Bogota")
-    now = datetime.now(tz)
-    dt = datetime(now.year, now.month, now.day, 8, 0, 0, tzinfo=tz)
-    return dt.strftime("%d/%m/%Y %H:%M:%S")
+def extract_date_from_s3_key(key: str) -> datetime:
+    filename = Path(key).name
+    match = re.match(r"^(\d{2}-\d{2}-\d{4})\b", filename)
+    if not match:
+        raise ValueError(
+            f"El archivo S3 no inicia con una fecha valida dd-mm-YYYY: {filename}"
+        )
 
-# def bogota_yesterday_8am_str() -> str:
-#     tz = ZoneInfo("America/Bogota")
-#     now = datetime.now(tz) - timedelta(days=1)
-#     dt = datetime(now.year, now.month, now.day, 8, 0, 0, tzinfo=tz)
-#     return dt.strftime("%d/%m/%Y %H:%M:%S")
+    try:
+        return datetime.strptime(match.group(1), "%d-%m-%Y")
+    except ValueError as exc:
+        raise ValueError(f"La fecha del archivo S3 no es valida: {filename}") from exc
+
+def bogota_8am_str(source_date: datetime) -> str:
+    tz = ZoneInfo("America/Bogota")
+    dt = datetime(source_date.year, source_date.month, source_date.day, 8, 0, 0, tzinfo=tz)
+    return dt.strftime("%d/%m/%Y %H:%M:%S")
 
 def pick_latest_local_csv(folder: Path) -> Path:
     files = [p for p in folder.glob("*.csv") if p.is_file()]
@@ -212,7 +215,7 @@ def build_multicanal_map(df: pd.DataFrame) -> pd.DataFrame:
 
 # ========================= Construcción =========================
 
-def build_cargue_sms(df_sms: pd.DataFrame, multicanal_map: pd.DataFrame) -> pd.DataFrame:
+def build_cargue_sms(df_sms: pd.DataFrame, multicanal_map: pd.DataFrame, fecha_gestion: str) -> pd.DataFrame:
     for col in [SMS_COL_CED, SMS_COL_TEL, SMS_COL_MSG]:
         if col not in df_sms.columns:
             raise ValueError(f"Falta columna {col} en SMS S3")
@@ -225,9 +228,6 @@ def build_cargue_sms(df_sms: pd.DataFrame, multicanal_map: pd.DataFrame) -> pd.D
 
     base = base.merge(multicanal_map, on="CEDULA", how="left")
     base["NUMERO PRODUCTO"] = base["NUMERO PRODUCTO"].fillna("")
-
-    fecha_gestion = bogota_today_8am_str()
-    # fecha_gestion = bogota_yesterday_8am_str()
 
     out = pd.DataFrame({
         "CEDULA": base["CEDULA"],
@@ -277,19 +277,22 @@ def main():
 
     client = s3_client()
     latest = pick_latest_object(client, bucket, S3_FOLDER, exclude_prefix=S3_PROCESADOS_FOLDER)
+    source_date = extract_date_from_s3_key(latest["Key"])
+    fecha_gestion = bogota_8am_str(source_date)
+    output_file = MENSAJE_DIR / f"cargue_sms_{source_date.strftime('%Y-%m-%d')}.csv"
 
     df_sms = read_sms_csv_from_s3(client, bucket, latest["Key"])
 
-    out = build_cargue_sms(df_sms, multicanal_map)
+    out = build_cargue_sms(df_sms, multicanal_map, fecha_gestion)
     out = enforce_template_order(out)
 
     # 1) Guardar archivo completo (como antes)
-    out.to_csv(OUTPUT_FILE, index=False, encoding="latin-1", sep=";")
+    out.to_csv(output_file, index=False, encoding="latin-1", sep=";")
 
     # 2) NUEVO: dividir en lotes de 20.000
     lote_paths = split_dataframe_to_csv_lotes(
         df=out,
-        base_output_file=OUTPUT_FILE,
+        base_output_file=output_file,
         lotes_dir=LOTES_DIR,
         lote_size=LOTE_SIZE
     )
@@ -297,7 +300,7 @@ def main():
     # ✅ EN VEZ DE BORRAR: mover a PROCESADOS
     dest_key = move_s3_object(client, bucket, latest["Key"], S3_PROCESADOS_FOLDER)
 
-    print(f"✅ Archivo generado correctamente: {OUTPUT_FILE}")
+    print(f"✅ Archivo generado correctamente: {output_file}")
     print(f"📊 Filas: {len(out)}")
 
     if lote_paths:
